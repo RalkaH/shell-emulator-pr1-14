@@ -1,4 +1,3 @@
-cat > README.md << 'EOF'
 # shell-emulator-pr1-14
 
 Эмулятор оболочки UNIX для практической работы №1. Вариант - 14
@@ -23,7 +22,7 @@ cat > README.md << 'EOF'
 Добавлена поддержка параметров командной строки:
 
 ```bash
-python3 main.py --vfs <путь> --log <путь> [--script <путь>
+python3 main.py --vfs <путь> --log <путь> [--script <путь>]
 ```
 
 --vfs — путь к директории VFS
@@ -78,7 +77,7 @@ full_test.sh — полный тест всех команд и ошибок
 
 ```json
 {
-  "user": "kali",
+  "user": "user",
   "command": "ls",
   "args": [],
   "timestamp": "2025-10-05T17:56:01.024491"
