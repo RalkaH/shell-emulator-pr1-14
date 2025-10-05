@@ -11,23 +11,28 @@ from tkinter import scrolledtext
 
 class ShellEmulator:
     def __init__(self, vfs_path, log_path, script_path=None):
-        self.vfs_path = vfs_path
         self.log_path = log_path
         self.script_path = script_path
         self.running = True
 
-        # Создаём лог-файл, если не существует
+        # Загрузка VFS
+        if not os.path.isdir(vfs_path):
+            print(f"Ошибка: VFS не найден или не является директорией: {vfs_path}", file=sys.stderr)
+            sys.exit(1)
+        self.vfs_root = os.path.abspath(vfs_path)
+        self.current_dir = self.vfs_root  # начальная директория = корень VFS
+
+        # Создаём лог-файл
         os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
         if not os.path.exists(self.log_path):
             with open(self.log_path, 'w', encoding='utf-8') as f:
                 json.dump([], f)
 
-        # Отладочный вывод параметров
-        print(f"[DEBUG] VFS path: {self.vfs_path}")
+        # Отладочный вывод
+        print(f"[DEBUG] VFS root: {self.vfs_root}")
         print(f"[DEBUG] Log file: {self.log_path}")
         print(f"[DEBUG] Script file: {self.script_path}")
 
-        # Запуск GUI или скрипта
         if self.script_path:
             self.run_script()
         else:
@@ -40,20 +45,30 @@ class ShellEmulator:
             "args": args,
             "timestamp": datetime.now().isoformat()
         }
-        # Прочитать текущий лог
         try:
             with open(self.log_path, 'r', encoding='utf-8') as f:
                 log = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             log = []
-        # Добавить новую запись
         log.append(log_entry)
         with open(self.log_path, 'w', encoding='utf-8') as f:
             json.dump(log, f, indent=2, ensure_ascii=False)
 
+    def safe_path(self, path):
+        """Преобразует путь в абсолютный внутри VFS и проверяет, что он не выходит за пределы"""
+        if os.path.isabs(path):
+            full_path = os.path.abspath(os.path.join(self.vfs_root, path.lstrip('/')))
+        else:
+            full_path = os.path.abspath(os.path.join(self.current_dir, path))
+
+        # Проверка: путь должен начинаться с self.vfs_root
+        if not full_path.startswith(self.vfs_root):
+            raise PermissionError("Доступ за пределы VFS запрещён")
+        return full_path
+
     def execute_command(self, user_input, output_callback=None):
         if not user_input.strip():
-            return True  # пустая строка — не ошибка
+            return True
 
         parts = user_input.strip().split()
         if not parts:
@@ -68,22 +83,74 @@ class ShellEmulator:
             if output_callback:
                 output_callback("$ exit\nВыход...")
             self.running = False
-            return True  # exit — успешная команда!
-
-        elif command in ["ls", "cd"]:
-            msg = f"{command}: {' '.join(args)}"
-            if output_callback:
-                output_callback(f"$ {user_input}\n{msg}")
             return True
+
+        elif command == "ls":
+            try:
+                target = args[0] if args else "."
+                full_path = self.safe_path(target)
+                if not os.path.exists(full_path):
+                    msg = f"ls: cannot access '{target}': No such file or directory"
+                    if output_callback:
+                        output_callback(f"$ {user_input}\n{msg}")
+                    return False
+                if not os.path.isdir(full_path):
+                    # Если это файл — просто покажем его имя
+                    msg = os.path.basename(full_path)
+                else:
+                    items = sorted(os.listdir(full_path))
+                    msg = "\n".join(items) if items else ""
+                if output_callback:
+                    output_callback(f"$ {user_input}\n{msg}")
+                return True
+            except PermissionError as e:
+                msg = f"ls: {e}"
+                if output_callback:
+                    output_callback(f"$ {user_input}\n{msg}")
+                return False
+            except Exception as e:
+                msg = f"ls: error: {e}"
+                if output_callback:
+                    output_callback(f"$ {user_input}\n{msg}")
+                return False
+
+        elif command == "cd":
+            if not args:
+                # cd без аргументов — в корень VFS
+                self.current_dir = self.vfs_root
+                if output_callback:
+                    output_callback(f"$ {user_input}")
+                return True
+            try:
+                target = args[0]
+                full_path = self.safe_path(target)
+                if not os.path.exists(full_path):
+                    msg = f"cd: {target}: No such file or directory"
+                    if output_callback:
+                        output_callback(f"$ {user_input}\n{msg}")
+                    return False
+                if not os.path.isdir(full_path):
+                    msg = f"cd: {target}: Not a directory"
+                    if output_callback:
+                        output_callback(f"$ {user_input}\n{msg}")
+                    return False
+                self.current_dir = full_path
+                if output_callback:
+                    output_callback(f"$ {user_input}")
+                return True
+            except PermissionError as e:
+                msg = f"cd: {e}"
+                if output_callback:
+                    output_callback(f"$ {user_input}\n{msg}")
+                return False
 
         else:
             msg = f"bash: {command}: команда не найдена"
             if output_callback:
                 output_callback(f"$ {user_input}\n{msg}")
-            return False  # только неизвестная команда — ошибка
+            return False
 
     def run_script(self):
-        """Выполняет команды из скрипта"""
         if not os.path.exists(self.script_path):
             print(f"Ошибка: скрипт не найден: {self.script_path}", file=sys.stderr)
             sys.exit(1)
@@ -96,7 +163,7 @@ class ShellEmulator:
             if not line or line.startswith('#'):
                 continue
 
-            print(f"$ {line}")  # имитация ввода
+            # Убираем дублирование: не печатаем "$ команда" здесь
             success = self.execute_command(line, output_callback=print)
             if not success:
                 print(f"Ошибка в строке {i} скрипта: '{line}'", file=sys.stderr)
@@ -134,10 +201,6 @@ class ShellEmulator:
                 return
             entry.delete(0, tk.END)
 
-            # Парсим команду для проверки
-            parts = user_input.strip().split()
-            command = parts[0] if parts else ""
-
             success = self.execute_command(user_input, output_callback=print_output)
             if not self.running:
                 root.after(100, root.destroy)
@@ -150,8 +213,8 @@ class ShellEmulator:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Эмулятор UNIX-оболочки")
-    parser.add_argument("--vfs", required=True, help="Путь к виртуальной ФС (VFS)")
+    parser = argparse.ArgumentParser(description="Эмулятор UNIX-оболочки с VFS")
+    parser.add_argument("--vfs", required=True, help="Путь к директории VFS")
     parser.add_argument("--log", required=True, help="Путь к лог-файлу (JSON)")
     parser.add_argument("--script", help="Путь к стартовому скрипту")
 
@@ -162,3 +225,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
